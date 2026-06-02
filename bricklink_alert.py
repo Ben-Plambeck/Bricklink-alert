@@ -28,7 +28,7 @@ from requests_oauthlib import OAuth1Session
 
 WATCH_ITEMS = [
     {
-        "type":      "M",           # M = Minifig
+        "type":      "minifig",           # M = Minifig
         "no":        "bat015",
         "name":      "Nightwing (bat015)",
         "condition": "N",           # N = New, U = Used
