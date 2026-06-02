@@ -32,7 +32,7 @@ WATCH_ITEMS = [
         "no":        "bat015",
         "name":      "Nightwing (bat015)",
         "condition": "N",           # N = New, U = Used
-        "threshold": 330.00,        # Alert if any listing is UNDER this price (USD)
+        "threshold": 300.00,        # Alert if any listing is UNDER this price (USD)
     },
     # Add more items here in the same format, e.g.:
     # {
