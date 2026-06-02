@@ -44,7 +44,7 @@ WATCH_ITEMS = [
     # },
 ]
 
-POLL_INTERVAL_SECONDS = 15 * 60   # 15 minutes
+POLL_INTERVAL_SECONDS = 1 * 60   # 15 minutes
 
 # ── BrickLink API ─────────────────────────────────────────────────────────────
 
