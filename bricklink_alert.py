@@ -30,24 +30,7 @@ WATCH_ITEMS = [
     # ── Minifigs ──────────────────────────────────────────────────────────────
     {"type": "minifig", "no": "bat015",       "name": "Nightwing (bat015)",                    "condition": "N", "threshold": 330.00},
 
-    # ── 2005 LEGO Star Wars Sets ──────────────────────────────────────────────
-    {"type": "set",     "no": "6966-1",       "name": "Mini Jedi Starfighter (6966-1)",         "condition": "N", "threshold": 10.93},
-    {"type": "set",     "no": "6967-1",       "name": "Mini ARC-170 Starfighter (6967-1)",      "condition": "N", "threshold": 11.28},
-    {"type": "set",     "no": "7250-1",       "name": "Clone Scout Walker (7250-1)",            "condition": "N", "threshold": 100.88},
-    {"type": "set",     "no": "7251-1",       "name": "Darth Vader Transformation (7251-1)",    "condition": "N", "threshold": 89.81},
-    {"type": "set",     "no": "7252-1",       "name": "Droid Tri-Fighter (7252-1)",             "condition": "N", "threshold": 60.00},
-    {"type": "set",     "no": "7255-1",       "name": "General Grievous Chase (7255-1)",        "condition": "N", "threshold": 449.88},
-    {"type": "set",     "no": "7256-1",       "name": "Jedi Starfighter and Vulture Droid (7256-1)", "condition": "N", "threshold": 160.04},
-    {"type": "set",     "no": "7257-1",       "name": "Ultimate Lightsaber Duel (7257-1)",      "condition": "N", "threshold": 641.20},
-    {"type": "set",     "no": "7258-1",       "name": "Wookiee Attack (7258-1)",                "condition": "N", "threshold": 315.89},
-    {"type": "set",     "no": "7259-1",       "name": "ARC-170 Fighter (7259-1)",               "condition": "N", "threshold": 331.68},
-    {"type": "set",     "no": "7260-1",       "name": "Wookiee Catamaran (7260-1)",             "condition": "N", "threshold": 1199.99},
-    {"type": "set",     "no": "7261-1",       "name": "Clone Turbo Tank (7261-1)",              "condition": "N", "threshold": 502.71},
-    {"type": "set",     "no": "7263-1",       "name": "TIE Fighter (7263-1)",                   "condition": "N", "threshold": 244.00},
-    {"type": "set",     "no": "7264-1",       "name": "Imperial Inspection (7264-1)",           "condition": "N", "threshold": 321.65},
-    {"type": "set",     "no": "7283-1",       "name": "Ultimate Space Battle (7283-1)",         "condition": "N", "threshold": 979.57},
-    {"type": "set",     "no": "10143-1",      "name": "Death Star II (10143-1)",                "condition": "N", "threshold": 3100.00},
-    {"type": "set",     "no": "65771-1",      "name": "Episode III Collectors' Set (65771-1)",  "condition": "N", "threshold": 738.22},
+  
 ]
 
 POLL_INTERVAL_SECONDS = 5 * 60    # 5 minutes
