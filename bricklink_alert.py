@@ -3,25 +3,27 @@ BrickLink Price Alert Monitor
 Reads watchlist from Google Sheets, checks prices once, and emails alerts.
 Designed to be run on a schedule via GitHub Actions.
 
-Setup:
-  pip install requests requests-oauthlib gspread google-auth
+Logic:
+- Gets the 6-month average SOLD price (new condition) for each item
+- Alerts if any CURRENT US listing is 30% or more below that average
+- Falls back to global listings if no US sold data exists
 
 Environment variables (set as GitHub Secrets):
   BL_CONSUMER_KEY
   BL_CONSUMER_SECRET
   BL_TOKEN_VALUE
   BL_TOKEN_SECRET
-  ALERT_EMAIL          (your email to receive alerts)
-  SMTP_FROM            (gmail address used to send)
-  SMTP_PASSWORD        (gmail App Password, NOT your gmail password)
-  GOOGLE_CREDENTIALS   (contents of your Google service account JSON key)
-  GOOGLE_SHEET_NAME    (exact name of your Google Sheet, e.g. "price tracker sheet")
+  ALERT_EMAIL
+  SMTP_FROM
+  SMTP_PASSWORD
+  GOOGLE_CREDENTIALS
+  GOOGLE_SHEET_NAME
 
 Google Sheet format (Sheet1):
   Column A: Item      — BrickLink item number, e.g. bat015 or 7261-1
   Column B: Type      — Minifig or Set
   Column C: Condition — New / Sealed / Used
-  Column D: Threshold — price in USD, e.g. 300 or $330.00
+  Column D: Threshold — ignored (kept for reference only, script uses dynamic 30% below avg)
 """
 
 import os
@@ -40,6 +42,10 @@ SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
+
+DISCOUNT_THRESHOLD = 0.30  # Alert if listing is 30% below 6-month avg sold price
+
+# ── Google Sheets ─────────────────────────────────────────────────────────────
 
 def get_gspread_client():
     creds_json = os.environ["GOOGLE_CREDENTIALS"]
@@ -60,12 +66,14 @@ def load_watchlist():
             item_no   = str(row.get("Item", "")).strip()
             item_type = str(row.get("Type", "")).strip().lower()
             condition = str(row.get("Condition", "")).strip().lower()
-            threshold = str(row.get("Threshold", "")).strip().replace("$", "").replace(",", "")
-            if not item_no or not threshold:
+
+            if not item_no:
                 continue
+
             if item_type not in ("set", "minifig"):
                 logging.warning(f"Skipping '{item_no}': unknown type '{item_type}'")
                 continue
+
             if condition in ("new", "sealed"):
                 bl_condition = "N"
             elif condition == "used":
@@ -73,16 +81,20 @@ def load_watchlist():
             else:
                 logging.warning(f"Skipping '{item_no}': unknown condition '{condition}'")
                 continue
+
             watchlist.append({
                 "no":        item_no,
                 "type":      item_type,
                 "condition": bl_condition,
-                "threshold": float(threshold),
             })
+
         except Exception as e:
             logging.warning(f"Skipping row {row}: {e}")
+
     logging.info(f"Loaded {len(watchlist)} item(s) from Google Sheet.")
     return watchlist
+
+# ── BrickLink API ─────────────────────────────────────────────────────────────
 
 def get_oauth_session():
     return OAuth1Session(
@@ -92,55 +104,96 @@ def get_oauth_session():
         resource_owner_secret=os.environ["BL_TOKEN_SECRET"],
     )
 
-def check_price(session, item):
+def get_avg_sold_price(session, item):
+    """Get 6-month average sold price for new condition, US first then global."""
+    url = f"https://api.bricklink.com/api/store/v1/items/{item['type']}/{item['no']}/price"
+    for country in ["US", None]:
+        params = {
+            "guide_type":  "sold",
+            "new_or_used": item["condition"],
+            "currency_code": "USD",
+        }
+        if country:
+            params["country_code"] = country
+        try:
+            resp = session.get(url, params=params)
+            data = resp.json()
+            if data.get("meta", {}).get("code") != 200:
+                continue
+            avg = data.get("data", {}).get("avg_price")
+            if avg:
+                return float(avg), country
+        except Exception as e:
+            logging.error(f"Error getting sold price for {item['no']}: {e}")
+    return None, None
+
+def get_us_listings(session, item):
+    """Get current US-only stock listings for new condition."""
     url = f"https://api.bricklink.com/api/store/v1/items/{item['type']}/{item['no']}/price"
     params = {
         "guide_type":    "stock",
         "new_or_used":   item["condition"],
         "currency_code": "USD",
+        "country_code":  "US",
     }
-    resp = session.get(url, params=params)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("meta", {}).get("code") != 200:
-        logging.warning(f"API warning for {item['no']}: {data.get('meta')}")
+    try:
+        resp = session.get(url, params=params)
+        data = resp.json()
+        if data.get("meta", {}).get("code") != 200:
+            return []
+        return data.get("data", {}).get("price_detail", [])
+    except Exception as e:
+        logging.error(f"Error getting listings for {item['no']}: {e}")
         return []
-    return data.get("data", {}).get("price_detail", [])
 
-def send_alert(item, listings_under_threshold):
+# ── Email Alert ───────────────────────────────────────────────────────────────
+
+def send_alert(item, listings, avg_sold, threshold_price):
     smtp_from = os.environ["SMTP_FROM"]
     smtp_pass = os.environ["SMTP_PASSWORD"]
     alert_to  = os.environ["ALERT_EMAIL"]
+
     condition_label = "New (Sealed)" if item["condition"] == "N" else "Used"
-    subject = f"BrickLink Alert: {item['no']} listed under ${item['threshold']:.2f}!"
+    subject = f"BrickLink Deal: {item['no']} listed 30%+ below 6-month avg!"
+
     rows = ""
-    for listing in listings_under_threshold:
+    for listing in listings:
         price   = float(listing.get("unit_price", 0))
         qty     = listing.get("quant", listing.get("quantity", listing.get("qty", "N/A")))
-        country = listing.get("seller_country_code", "N/A")
-        rows += f"<tr><td>${price:.2f}</td><td>{qty}</td><td>{country}</td></tr>"
+        country = listing.get("seller_country_code", "US")
+        pct_off = round((1 - price / avg_sold) * 100, 1)
+        rows += f"<tr><td>${price:.2f}</td><td>{qty}</td><td>{country}</td><td>{pct_off}% below avg</td></tr>"
+
     if item["type"] == "minifig":
-        bl_url = f"https://www.bricklink.com/v2/catalog/catalogitem.page?M={item['no']}#T=S"
+        bl_url = f"https://www.bricklink.com/v2/catalog/catalogitem.page?M={item['no']}#T=S&O={{%22ss%22:%22US%22}}"
     else:
-        bl_url = f"https://www.bricklink.com/v2/catalog/catalogitem.page?S={item['no']}#T=S"
+        bl_url = f"https://www.bricklink.com/v2/catalog/catalogitem.page?S={item['no']}#T=S&O={{%22ss%22:%22US%22}}"
+
     html = f"""
-    <h2>Price Alert: {item['no']}</h2>
-    <p>The following <b>{condition_label}</b> listings are under <b>${item['threshold']:.2f}</b>:</p>
+    <h2>🔥 Deal Alert: {item['no']}</h2>
+    <p><b>6-month avg sold price:</b> ${avg_sold:.2f}</p>
+    <p><b>Alert threshold (30% below avg):</b> ${threshold_price:.2f}</p>
+    <p>The following <b>{condition_label}</b> US listings are 30%+ below the 6-month average:</p>
     <table border="1" cellpadding="6" cellspacing="0">
-      <tr><th>Price (USD)</th><th>Qty</th><th>Seller Country</th></tr>
+      <tr><th>Price (USD)</th><th>Qty</th><th>Seller Country</th><th>Discount</th></tr>
       {rows}
     </table>
-    <p><a href="{bl_url}">View listings on BrickLink →</a></p>
+    <p><a href="{bl_url}">View US listings on BrickLink →</a></p>
     """
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = smtp_from
     msg["To"]      = alert_to
     msg.attach(MIMEText(html, "html"))
+
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(smtp_from, smtp_pass)
         server.sendmail(smtp_from, alert_to, msg.as_string())
+
     logging.info(f"Alert email sent for {item['no']}!")
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     logging.basicConfig(
@@ -148,32 +201,50 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     logging.info("BrickLink price alert check started.")
+
     watchlist = load_watchlist()
     logging.info(f"Checking {len(watchlist)} item(s)...")
+
     session = get_oauth_session()
     alerts_sent = 0
+
     for item in watchlist:
         try:
             logging.info(f"Checking {item['no']}...")
-            listings = check_price(session, item)
+
+            # Get 6-month avg sold price
+            avg_sold, sold_country = get_avg_sold_price(session, item)
+            if not avg_sold:
+                logging.info(f"  No sold data found, skipping.")
+                time.sleep(0.5)
+                continue
+
+            threshold_price = avg_sold * (1 - DISCOUNT_THRESHOLD)
+            logging.info(f"  Avg sold: ${avg_sold:.2f} | Threshold: ${threshold_price:.2f}")
+
+            # Get current US listings
+            listings = get_us_listings(session, item)
             under = [
                 l for l in listings
-                if float(l.get("unit_price", 999999)) < item["threshold"]
+                if float(l.get("unit_price", 999999)) <= threshold_price
             ]
+
             if under:
-                logging.info(f"  {len(under)} listing(s) found under ${item['threshold']}! Sending alert.")
-                send_alert(item, under)
+                logging.info(f"  {len(under)} US listing(s) found 30%+ below avg! Sending alert.")
+                send_alert(item, under, avg_sold, threshold_price)
                 alerts_sent += 1
             else:
-                prices = [float(l.get("unit_price", 0)) for l in listings if l.get("unit_price")]
-                min_price = min(prices) if prices else None
-                if min_price:
-                    logging.info(f"  No listings under threshold. Lowest: ${min_price:.2f}")
+                us_prices = [float(l.get("unit_price", 0)) for l in listings if l.get("unit_price")]
+                if us_prices:
+                    logging.info(f"  No deals found. Lowest US listing: ${min(us_prices):.2f}")
                 else:
-                    logging.info(f"  No listings found.")
+                    logging.info(f"  No US listings found.")
+
             time.sleep(0.5)
+
         except Exception as e:
             logging.error(f"Error checking {item['no']}: {e}")
+
     logging.info(f"Done. {alerts_sent} alert(s) sent.")
 
 if __name__ == "__main__":
