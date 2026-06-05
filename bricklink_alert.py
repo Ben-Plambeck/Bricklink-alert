@@ -43,7 +43,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-DISCOUNT_THRESHOLD = 0.30  # Alert if listing is 30% below 6-month avg sold price
+DISCOUNT_THRESHOLD = 0.26  # Alert if listing is 30% below 6-month avg sold price
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 
