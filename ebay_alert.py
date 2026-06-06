@@ -5,19 +5,6 @@ eBay Price Alert Monitor
 - Also monitors for LEGO collection/lot listings nationwide
 - New/Sealed condition only
 - US sellers only
-
-Environment variables (GitHub Secrets):
-  EBAY_APP_ID
-  EBAY_CERT_ID
-  BL_CONSUMER_KEY
-  BL_CONSUMER_SECRET
-  BL_TOKEN_VALUE
-  BL_TOKEN_SECRET
-  ALERT_EMAIL
-  SMTP_FROM
-  SMTP_PASSWORD
-  GOOGLE_CREDENTIALS
-  GOOGLE_SHEET_NAME
 """
 
 import os
@@ -67,6 +54,34 @@ EXCLUDE_KEYWORDS = [
     "custom",
     "loose",
     "broken",
+    "used",
+    "open box",
+    "opened",
+    "built",
+    "assembled",
+    "pre-owned",
+    "preowned",
+    "pre owned",
+    "missing",
+    "no box",
+    "no manual",
+    "read description",
+    "lot of used",
+    "used lot",
+    "mixed lot",
+    "bulk used",
+    "played",
+    "display",
+    "retired used",
+]
+
+REQUIRE_KEYWORDS = [
+    "sealed",
+    "new",
+    "factory sealed",
+    "misb",
+    "nib",
+    "unopened",
 ]
 
 # ── eBay OAuth ────────────────────────────────────────────────────────────────
@@ -109,13 +124,20 @@ def filter_collection_listings(listings):
     for l in listings:
         title = l.get("title", "").lower()
         price = float(l.get("price", {}).get("value", 0))
+        condition = l.get("condition", "").lower()
 
         # Price filter
         if price < COLLECTION_MIN_PRICE or price > COLLECTION_MAX_PRICE:
             continue
 
-        # Exclude bad keywords
+        # Exclude bad keywords in title
         if any(ex in title for ex in EXCLUDE_KEYWORDS):
+            continue
+
+        # Must have sealed/new keyword in title OR eBay condition = New
+        has_sealed_keyword = any(kw in title for kw in REQUIRE_KEYWORDS)
+        is_new_condition = condition in ("new", "brand new")
+        if not has_sealed_keyword and not is_new_condition:
             continue
 
         results.append(l)
@@ -293,7 +315,6 @@ def main():
             threshold = avg_sold * (1 - DISCOUNT_THRESHOLD)
             listings = ebay_search(token, f"LEGO {item['no']} sealed", condition="NEW", limit=10)
 
-            # Filter out excluded keywords
             listings = [
                 l for l in listings
                 if not any(ex in l.get("title", "").lower() for ex in EXCLUDE_KEYWORDS)
