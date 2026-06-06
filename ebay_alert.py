@@ -5,6 +5,7 @@ eBay Price Alert Monitor
 - Also monitors for LEGO collection/lot listings nationwide
 - New/Sealed condition only
 - US sellers only
+- Tracks seen listings for 3 days to avoid repeat emails
 """
 
 import os
@@ -14,6 +15,7 @@ import smtplib
 import logging
 import tempfile
 import requests
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from requests_oauthlib import OAuth1Session
@@ -29,6 +31,7 @@ SCOPES = [
 DISCOUNT_THRESHOLD = 0.30
 COLLECTION_MIN_PRICE = 400.00
 COLLECTION_MAX_PRICE = 20000.00
+SEEN_EXPIRY_DAYS = 3
 
 COLLECTION_KEYWORDS = [
     "LEGO lot",
@@ -125,21 +128,14 @@ def filter_collection_listings(listings):
         title = l.get("title", "").lower()
         price = float(l.get("price", {}).get("value", 0))
         condition = l.get("condition", "").lower()
-
-        # Price filter
         if price < COLLECTION_MIN_PRICE or price > COLLECTION_MAX_PRICE:
             continue
-
-        # Exclude bad keywords in title
         if any(ex in title for ex in EXCLUDE_KEYWORDS):
             continue
-
-        # Must have sealed/new keyword in title OR eBay condition = New
         has_sealed_keyword = any(kw in title for kw in REQUIRE_KEYWORDS)
         is_new_condition = condition in ("new", "brand new")
         if not has_sealed_keyword and not is_new_condition:
             continue
-
         results.append(l)
     return results
 
@@ -153,8 +149,64 @@ def get_gspread_client():
     creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     return gspread.authorize(creds)
 
-def load_watchlist():
-    client = get_gspread_client()
+def get_seen_sheet(client):
+    sheet_name = os.environ.get("GOOGLE_SHEET_NAME", "price tracker sheet")
+    spreadsheet = client.open(sheet_name)
+    try:
+        return spreadsheet.worksheet("Seen")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title="Seen", rows=10000, cols=2)
+        ws.append_row(["Listing ID", "Date Seen"])
+        return ws
+
+def load_seen_ids(seen_sheet):
+    rows = seen_sheet.get_all_records()
+    now = datetime.utcnow()
+    seen = {}
+    for row in rows:
+        listing_id = str(row.get("Listing ID", "")).strip()
+        date_seen  = str(row.get("Date Seen", "")).strip()
+        if listing_id and date_seen:
+            try:
+                seen[listing_id] = datetime.fromisoformat(date_seen)
+            except:
+                pass
+    # Return only IDs seen within the last 3 days
+    return {k: v for k, v in seen.items() if now - v < timedelta(days=SEEN_EXPIRY_DAYS)}
+
+def save_seen_ids(seen_sheet, new_ids):
+    """Add new listing IDs to the Seen sheet and clean up expired ones."""
+    now = datetime.utcnow()
+    rows = seen_sheet.get_all_records()
+
+    # Build current seen dict
+    existing = {}
+    for row in rows:
+        lid = str(row.get("Listing ID", "")).strip()
+        ds  = str(row.get("Date Seen", "")).strip()
+        if lid and ds:
+            try:
+                existing[lid] = datetime.fromisoformat(ds)
+            except:
+                pass
+
+    # Add new IDs
+    for lid in new_ids:
+        existing[lid] = now
+
+    # Remove expired
+    cutoff = now - timedelta(days=SEEN_EXPIRY_DAYS)
+    existing = {k: v for k, v in existing.items() if v > cutoff}
+
+    # Rewrite sheet
+    seen_sheet.clear()
+    seen_sheet.append_row(["Listing ID", "Date Seen"])
+    for lid, dt in existing.items():
+        seen_sheet.append_row([lid, dt.isoformat()])
+
+    logging.info(f"Seen sheet updated: {len(existing)} active entries.")
+
+def load_watchlist(client):
     sheet_name = os.environ.get("GOOGLE_SHEET_NAME", "price tracker sheet")
     sheet = client.open(sheet_name).sheet1
     rows = sheet.get_all_records()
@@ -210,7 +262,6 @@ def send_deal_alert(item, ebay_listings, avg_sold, threshold):
     smtp_from = os.environ["SMTP_FROM"]
     smtp_pass = os.environ["SMTP_PASSWORD"]
     alert_to  = os.environ["ALERT_EMAIL"]
-
     subject = f"eBay Deal: {item['no']} listed 30%+ below BrickLink avg!"
     rows = ""
     for l in ebay_listings:
@@ -219,7 +270,6 @@ def send_deal_alert(item, ebay_listings, avg_sold, threshold):
         url   = l.get("itemWebUrl", "#")
         pct_off = round((1 - float(price) / avg_sold) * 100, 1) if avg_sold else "N/A"
         rows += f'<tr><td><a href="{url}">{title}</a></td><td>${price}</td><td>{pct_off}% below avg</td></tr>'
-
     html = f"""
     <h2>🔥 eBay Deal: {item['no']}</h2>
     <p><b>BrickLink 6-month avg sold:</b> ${avg_sold:.2f}</p>
@@ -243,7 +293,6 @@ def send_collection_alert(keyword, listings):
     smtp_from = os.environ["SMTP_FROM"]
     smtp_pass = os.environ["SMTP_PASSWORD"]
     alert_to  = os.environ["ALERT_EMAIL"]
-
     subject = f"eBay Collection Alert: New '{keyword}' listings!"
     rows = ""
     for l in listings[:10]:
@@ -251,7 +300,6 @@ def send_collection_alert(keyword, listings):
         title = l.get("title", "N/A")
         url   = l.get("itemWebUrl", "#")
         rows += f'<tr><td><a href="{url}">{title}</a></td><td>${price}</td></tr>'
-
     html = f"""
     <h2>📦 New LEGO Collection Listings: "{keyword}"</h2>
     <p>Price range: ${COLLECTION_MIN_PRICE:.0f} - ${COLLECTION_MAX_PRICE:.0f} | US sellers | New/Sealed only</p>
@@ -282,8 +330,14 @@ def main():
 
     token = get_ebay_token()
     bl_session = get_bl_session()
-    watchlist = load_watchlist()
+    client = get_gspread_client()
+    watchlist = load_watchlist(client)
+    seen_sheet = get_seen_sheet(client)
+    seen_ids = load_seen_ids(seen_sheet)
+    new_seen_ids = []
     alerts_sent = 0
+
+    logging.info(f"Loaded {len(seen_ids)} seen listing IDs.")
 
     # ── Part 1: Collection hunting ─────────────────────────────────────────
     logging.info("Checking collection keywords...")
@@ -291,12 +345,17 @@ def main():
         try:
             listings = ebay_search(token, keyword, condition="NEW", limit=50)
             filtered = filter_collection_listings(listings)
-            if filtered:
-                logging.info(f"  Found {len(filtered)} listings for '{keyword}' — sending alert.")
-                send_collection_alert(keyword, filtered)
+
+            # Filter out already seen listings
+            new_listings = [l for l in filtered if l.get("itemId") not in seen_ids]
+
+            if new_listings:
+                logging.info(f"  Found {len(new_listings)} new listings for '{keyword}' — sending alert.")
+                send_collection_alert(keyword, new_listings)
                 alerts_sent += 1
+                new_seen_ids.extend([l.get("itemId") for l in new_listings if l.get("itemId")])
             else:
-                logging.info(f"  No qualifying listings for '{keyword}'.")
+                logging.info(f"  No new qualifying listings for '{keyword}'.")
         except Exception as e:
             logging.error(f"Error searching '{keyword}': {e}")
         time.sleep(0.5)
@@ -323,19 +382,25 @@ def main():
             under = [
                 l for l in listings
                 if float(l.get("price", {}).get("value", 999999)) <= threshold
+                and l.get("itemId") not in seen_ids
             ]
 
             if under:
-                logging.info(f"  {item['no']}: {len(under)} eBay listing(s) 30%+ below avg!")
+                logging.info(f"  {item['no']}: {len(under)} new eBay listing(s) 30%+ below avg!")
                 send_deal_alert(item, under, avg_sold, threshold)
                 alerts_sent += 1
+                new_seen_ids.extend([l.get("itemId") for l in under if l.get("itemId")])
             else:
-                logging.info(f"  {item['no']}: No eBay deals found.")
+                logging.info(f"  {item['no']}: No new eBay deals found.")
 
             time.sleep(0.5)
 
         except Exception as e:
             logging.error(f"Error checking {item['no']} on eBay: {e}")
+
+    # Save all newly seen IDs
+    if new_seen_ids:
+        save_seen_ids(seen_sheet, new_seen_ids)
 
     logging.info(f"Done. {alerts_sent} alert(s) sent.")
 
