@@ -1,0 +1,37 @@
+name: eBay Price Alert
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour
+  workflow_dispatch:
+
+jobs:
+  check-ebay:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests requests-oauthlib gspread google-auth
+
+      - name: Run eBay alert
+        env:
+          EBAY_APP_ID:        ${{ secrets.EBAY_APP_ID }}
+          EBAY_CERT_ID:       ${{ secrets.EBAY_CERT_ID }}
+          BL_CONSUMER_KEY:    ${{ secrets.BL_CONSUMER_KEY }}
+          BL_CONSUMER_SECRET: ${{ secrets.BL_CONSUMER_SECRET }}
+          BL_TOKEN_VALUE:     ${{ secrets.BL_TOKEN_VALUE }}
+          BL_TOKEN_SECRET:    ${{ secrets.BL_TOKEN_SECRET }}
+          ALERT_EMAIL:        ${{ secrets.ALERT_EMAIL }}
+          SMTP_FROM:          ${{ secrets.SMTP_FROM }}
+          SMTP_PASSWORD:      ${{ secrets.SMTP_PASSWORD }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_NAME:  ${{ secrets.GOOGLE_SHEET_NAME }}
+        run: python ebay_alert.py
