@@ -122,6 +122,23 @@ def ebay_search(token, query, condition="NEW", limit=50):
     data = resp.json()
     return data.get("itemSummaries", [])
 
+def is_new_listing(listing):
+    """Returns True if the listing was posted within the last 24 hours."""
+    date_str = listing.get("itemCreationDate") or listing.get("listingDate")
+    if not date_str:
+        return True  # if no date available, include it
+    try:
+        from dateutil import parser as dateparser
+        listed_at = dateparser.parse(date_str)
+        if listed_at.tzinfo:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.utcnow()
+        return (now - listed_at).total_seconds() < 86400  # 24 hours
+    except:
+        return True  # if parsing fails, include it
+
 def filter_collection_listings(listings):
     results = []
     for l in listings:
@@ -135,6 +152,8 @@ def filter_collection_listings(listings):
         has_sealed_keyword = any(kw in title for kw in REQUIRE_KEYWORDS)
         is_new_condition = condition in ("new", "brand new")
         if not has_sealed_keyword and not is_new_condition:
+            continue
+        if not is_new_listing(l):
             continue
         results.append(l)
     return results
@@ -198,11 +217,10 @@ def save_seen_ids(seen_sheet, new_ids):
     cutoff = now - timedelta(days=SEEN_EXPIRY_DAYS)
     existing = {k: v for k, v in existing.items() if v > cutoff}
 
-    # Rewrite sheet
+    # Rewrite sheet in one batch call (much faster)
+    all_rows = [["Listing ID", "Date Seen"]] + [[lid, dt.isoformat()] for lid, dt in existing.items()]
     seen_sheet.clear()
-    seen_sheet.append_row(["Listing ID", "Date Seen"])
-    for lid, dt in existing.items():
-        seen_sheet.append_row([lid, dt.isoformat()])
+    seen_sheet.update(all_rows, "A1")
 
     logging.info(f"Seen sheet updated: {len(existing)} active entries.")
 
